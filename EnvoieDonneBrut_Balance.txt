@@ -1,0 +1,886 @@
+================================================================================
+      PROCÉDURE D'IMPLÉMENTATION — ENVOI DES DONNÉES BRUTES DE LA BALANCE
+           Agent Desktop → SBI (API entries/*)
+================================================================================
+
+Date : 18 mars 2026
+
+
+================================================================================
+1. CONTEXTE & PRINCIPE
+================================================================================
+
+L'agent desktop installé sur le poste client extrait les écritures comptables
+brutes depuis le logiciel de comptabilité (Sage, etc.) et les envoie à SBI
+via l'API REST.
+
+SBI stocke ces écritures brutes telles quelles dans la table SQL Server
+"ecritures_comptables". La balance générale est ensuite calculée
+automatiquement côté serveur par agrégation (SUM des débits/crédits par
+numéro de compte).
+
+Flux :
+   Agent Desktop  →  POST /api/entries/push     →  Table ecritures_comptables
+                     GET  /api/entries/list      →  Consulter les écritures
+                     PUT  /api/entries/update    →  Modifier une écriture
+                     PUT  /api/entries/update-batch  →  Modifier en lot
+                     DELETE /api/entries/delete   →  Supprimer une écriture
+                     POST /api/entries/delete-batch → Supprimer en lot
+                     DELETE /api/entries/delete-by-sync → Supprimer par sync
+                     PUT  /api/entries/replace   →  Remplacer un périmètre
+                                                        ↓
+                                              GET /api/entries/balance
+                                                        ↓
+                                              Balance générale calculée
+
+
+================================================================================
+2. PRÉREQUIS
+================================================================================
+
+  ✓  Clé API valide (générée depuis l'interface SBI ou via l'API admin)
+  ✓  URL de base : https://i-management.website/sbi_api
+  ✓  Agent enregistré via POST /api/agent/register
+  ✓  Connaissance du company_id et de l'exercice fiscal
+
+
+================================================================================
+3. ROUTE API — ENVOI DES DONNÉES BRUTES
+================================================================================
+
+  URL      :  POST https://i-management.website/sbi_api/api/entries/push
+  Méthode  :  POST
+  Auth     :  Header X-API-Key: sbi_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+  Content  :  application/json
+
+
+================================================================================
+4. STRUCTURE DE LA REQUÊTE
+================================================================================
+
+{
+    "agent_id":     "agent-001",               ← ID unique de l'agent
+    "tenant_id":    "default",                 ← IGNORÉ (déduit de la clé API)
+    "company_id":   "SOC001",                  ← Code de la société
+    "company_name": "Société Principale",      ← Nom de la société
+    "fiscal_year":  2026,                      ← Exercice comptable
+    "period":       "03",                      ← Période ("01"-"12", "AN", ou null)
+    "data": [                                  ← Liste des écritures brutes
+        { ... écriture 1 ... },
+        { ... écriture 2 ... },
+        ...
+    ],
+    "metadata": {                              ← Optionnel
+        "extraction_date": "2026-03-16T10:00:00Z",
+        "source": "Sage Comptabilité i7",
+        "total_records": 150
+    }
+}
+
+
+================================================================================
+5. STRUCTURE D'UNE ÉCRITURE BRUTE (chaque élément de "data")
+================================================================================
+
+Champ                 Type       Obligatoire    Description
+─────────────────────────────────────────────────────────────────────────
+account_number        string     OUI            N° de compte (411000, 607100…)
+account_label         string     non            Libellé du compte
+debit                 float      non (déf:0)    Montant au débit
+credit                float      non (déf:0)    Montant au crédit
+journal_code          string     non            Code journal (VE, AC, BQ, OD…)
+journal_label         string     non            Libellé du journal
+entry_number          string     non            N° de pièce / écriture
+entry_date            string     non            Date (YYYY-MM-DD)
+auxiliary_number      string     non            N° auxiliaire / tiers
+auxiliary_label       string     non            Libellé du tiers
+label                 string     non            Libellé de la ligne
+reference             string     non            Référence pièce
+document_number       string     non            N° de document
+analytical_section    string     non            Section analytique
+currency              string     non (déf:EUR)  Devise
+
+
+================================================================================
+6. EXEMPLE COMPLET D'APPEL
+================================================================================
+
+POST https://i-management.website/sbi_api/api/entries/push
+Headers:
+    Content-Type: application/json
+    X-API-Key: sbi_IGkgj4VdlMzpAwVFjQebjwDV2rTBvIdBYBHc4znyT3I
+
+Body:
+{
+    "agent_id": "agent-001",
+    "tenant_id": "default",
+    "company_id": "SOC001",
+    "company_name": "Société Principale",
+    "fiscal_year": 2026,
+    "period": "03",
+    "data": [
+        {
+            "journal_code":   "VE",
+            "entry_number":   "VE-2026-001234",
+            "entry_date":     "2026-03-14",
+            "account_number": "411000",
+            "account_label":  "Clients",
+            "label":          "Facture FA-2026-789",
+            "debit":          1200.00,
+            "credit":         0.00,
+            "auxiliary_number": "C00145",
+            "auxiliary_label":  "Client Dupont SA",
+            "reference":      "FA-2026-789"
+        },
+        {
+            "journal_code":   "VE",
+            "entry_number":   "VE-2026-001234",
+            "entry_date":     "2026-03-14",
+            "account_number": "707100",
+            "account_label":  "Ventes de marchandises",
+            "label":          "Facture FA-2026-789",
+            "debit":          0.00,
+            "credit":         1000.00
+        },
+        {
+            "journal_code":   "VE",
+            "entry_number":   "VE-2026-001234",
+            "entry_date":     "2026-03-14",
+            "account_number": "445710",
+            "account_label":  "TVA collectée 20%",
+            "label":          "TVA Facture FA-2026-789",
+            "debit":          0.00,
+            "credit":         200.00
+        }
+    ],
+    "metadata": {
+        "extraction_date": "2026-03-16T10:00:00Z",
+        "source": "Sage Comptabilité i7",
+        "total_records": 3
+    }
+}
+
+
+================================================================================
+7. RÉPONSE ATTENDUE (200 OK)
+================================================================================
+
+{
+    "success":          true,
+    "records_received": 3,
+    "records_stored":   3,
+    "sync_id":          "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "message":          "3 écritures stockées pour SOC001 (exercice 2026, période 03)"
+}
+
+Codes d'erreur :
+    401  →  Header X-API-Key absent
+    403  →  Clé API invalide ou révoquée
+    422  →  Données invalides (champ manquant, type incorrect)
+
+
+================================================================================
+8. TABLE SQL SERVER — ecritures_comptables
+================================================================================
+
+Base de données : SBI (SQL Server, login sa)
+Table           : ecritures_comptables
+
+Colonnes :
+    id                  BIGINT IDENTITY     PK, auto-incrémenté
+    tenant_id           NVARCHAR(50)        NOT NULL, indexé
+    company_id          NVARCHAR(50)        NOT NULL
+    company_name        NVARCHAR(200)
+    agent_id            NVARCHAR(50)
+    fiscal_year         INT                 NOT NULL
+    period              NVARCHAR(10)        "01"-"12", "AN"
+    journal_code        NVARCHAR(20)
+    journal_label       NVARCHAR(200)
+    entry_number        NVARCHAR(50)
+    entry_date          DATE
+    account_number      NVARCHAR(20)        NOT NULL
+    account_label       NVARCHAR(500)
+    auxiliary_number    NVARCHAR(20)
+    auxiliary_label     NVARCHAR(500)
+    label               NVARCHAR(500)
+    debit               FLOAT               défaut 0
+    credit              FLOAT               défaut 0
+    reference           NVARCHAR(200)
+    document_number     NVARCHAR(100)
+    analytical_section  NVARCHAR(50)
+    currency            NVARCHAR(10)        défaut 'EUR'
+    sync_id             NVARCHAR(50)
+    created_at          DATETIME2           auto (UTC)
+
+Index :
+    idx_ecr_tenant_company_year   (tenant_id, company_id, fiscal_year)
+    idx_ecr_account               (tenant_id, company_id, fiscal_year, account_number)
+    idx_ecr_period                (tenant_id, company_id, fiscal_year, period)
+    idx_ecr_sync                  (sync_id)
+
+
+================================================================================
+9. CALCUL DE LA BALANCE GÉNÉRALE (côté serveur)
+================================================================================
+
+La balance est calculée automatiquement par SBI via :
+
+  GET /api/entries/balance?company_id=SOC001&fiscal_year=2026
+
+Requête SQL exécutée par le serveur :
+
+    SELECT
+        account_number,
+        MAX(account_label)     AS account_label,
+        COALESCE(SUM(debit), 0)  AS total_debit,
+        COALESCE(SUM(credit), 0) AS total_credit
+    FROM ecritures_comptables
+    WHERE tenant_id = @tenant_id
+      AND company_id = @company_id
+      AND fiscal_year = @fiscal_year
+    GROUP BY account_number
+    ORDER BY account_number
+
+Le champ "balance" = total_debit - total_credit pour chaque compte.
+
+L'agent desktop N'A PAS besoin de calculer la balance lui-même.
+Il envoie les données brutes, SBI fait le calcul.
+
+
+================================================================================
+10. PROCÉDURE D'IMPLÉMENTATION DANS L'AGENT DESKTOP
+================================================================================
+
+Étape 1 — Extraction des écritures depuis Sage
+───────────────────────────────────────────────
+  • Se connecter à la base Sage via ODBC/OLE DB
+  • Extraire les lignes d'écritures comptables pour l'exercice/la période
+  • Champs à extraire : journal_code, entry_date, account_number,
+    account_label, label, debit, credit, auxiliary_number, reference,
+    document_number
+  • Limiter l'extraction à l'exercice et à la période demandés
+
+Étape 2 — Formater les données en JSON
+───────────────────────────────────────
+  • Construire la liste "data" avec un dict par ligne d'écriture
+  • Respecter les noms de champs (snake_case)
+  • Les montants débit/crédit sont des float (pas de formatage monétaire)
+  • Les dates au format "YYYY-MM-DD"
+  • Remplir company_id, company_name, fiscal_year, period
+
+Étape 3 — Découper en lots si nécessaire
+────────────────────────────────────────
+  • Si plus de 5 000 écritures, découper en lots de 5 000
+  • Envoyer chaque lot via un appel POST /api/entries/push
+  • Chaque appel retourne un sync_id différent
+  • Toutes les écritures d'un même lot auront le même sync_id
+
+Étape 4 — Appeler l'API
+────────────────────────
+  • Méthode POST sur /api/entries/push
+  • Inclure le header X-API-Key
+  • Envoyer le JSON dans le body
+  • Vérifier le code de retour (200 = succès)
+  • Logger le sync_id retourné
+
+Étape 5 — Gestion des erreurs
+──────────────────────────────
+  • 401/403 : problème de clé API → vérifier la clé, la régénérer si nécessaire
+  • 422 : données invalides → vérifier le format JSON, les champs obligatoires
+  • 500 : erreur serveur → réessayer après 30 secondes (max 3 tentatives)
+  • Timeout : réessayer le lot en cours
+  • Logger toutes les erreurs pour diagnostic
+
+
+================================================================================
+11. EXEMPLE DE CODE PYTHON (AGENT DESKTOP)
+================================================================================
+
+import requests
+import json
+
+API_URL = "https://i-management.website/sbi_api/api/entries/push"
+API_KEY = "sbi_IGkgj4VdlMzpAwVFjQebjwDV2rTBvIdBYBHc4znyT3I"
+
+HEADERS = {
+    "Content-Type": "application/json",
+    "X-API-Key": API_KEY
+}
+
+def envoyer_ecritures(agent_id, company_id, company_name, fiscal_year,
+                      period, ecritures):
+    """
+    Envoie une liste d'écritures brutes vers SBI.
+    
+    ecritures : liste de dicts avec au moins "account_number", "debit", "credit"
+    """
+    payload = {
+        "agent_id": agent_id,
+        "tenant_id": "ignored",
+        "company_id": company_id,
+        "company_name": company_name,
+        "fiscal_year": fiscal_year,
+        "period": period,
+        "data": ecritures,
+        "metadata": {
+            "source": "Sage Comptabilité",
+            "total_records": len(ecritures)
+        }
+    }
+
+    # Découper en lots de 5000
+    BATCH_SIZE = 5000
+    for i in range(0, len(ecritures), BATCH_SIZE):
+        batch = ecritures[i:i + BATCH_SIZE]
+        payload["data"] = batch
+        payload["metadata"]["total_records"] = len(batch)
+
+        try:
+            response = requests.post(API_URL, json=payload, headers=HEADERS,
+                                     timeout=60)
+            response.raise_for_status()
+            result = response.json()
+            print(f"Lot {i//BATCH_SIZE + 1} : {result['records_stored']} "
+                  f"écritures stockées (sync_id: {result['sync_id']})")
+        except requests.exceptions.HTTPError as e:
+            print(f"Erreur HTTP {e.response.status_code} : {e.response.text}")
+            raise
+        except requests.exceptions.RequestException as e:
+            print(f"Erreur réseau : {e}")
+            raise
+
+
+# ─── Exemple d'utilisation ───────────────────────────────────────────
+
+ecritures = [
+    {
+        "journal_code": "VE",
+        "entry_date": "2026-03-14",
+        "account_number": "411000",
+        "account_label": "Clients",
+        "label": "Facture FA-2026-789",
+        "debit": 1200.00,
+        "credit": 0.00,
+        "auxiliary_number": "C00145"
+    },
+    {
+        "journal_code": "VE",
+        "entry_date": "2026-03-14",
+        "account_number": "707100",
+        "account_label": "Ventes de marchandises",
+        "label": "Facture FA-2026-789",
+        "debit": 0.00,
+        "credit": 1000.00
+    },
+    {
+        "journal_code": "VE",
+        "entry_date": "2026-03-14",
+        "account_number": "445710",
+        "account_label": "TVA collectée",
+        "label": "TVA FA-2026-789",
+        "debit": 0.00,
+        "credit": 200.00
+    }
+]
+
+envoyer_ecritures(
+    agent_id="agent-001",
+    company_id="SOC001",
+    company_name="Société Principale",
+    fiscal_year=2026,
+    period="03",
+    ecritures=ecritures
+)
+
+
+================================================================================
+12. VÉRIFICATION — CONSULTER LA BALANCE CALCULÉE
+================================================================================
+
+Après l'envoi, la balance peut être vérifiée :
+
+  GET https://i-management.website/sbi_api/api/entries/balance
+      ?company_id=SOC001
+      &fiscal_year=2026
+  Headers: X-API-Key: sbi_xxx...
+
+Réponse :
+{
+    "tenant_id": "default",
+    "company_id": "SOC001",
+    "fiscal_year": 2026,
+    "period": null,
+    "total_debit": 1200.00,
+    "total_credit": 1200.00,
+    "lines": [
+        { "account_number": "411000", "total_debit": 1200.0, "total_credit": 0.0, "balance": 1200.0 },
+        { "account_number": "445710", "total_debit": 0.0, "total_credit": 200.0, "balance": -200.0 },
+        { "account_number": "707100", "total_debit": 0.0, "total_credit": 1000.0, "balance": -1000.0 }
+    ],
+    "lines_count": 3
+}
+
+
+================================================================================
+13. CONSULTATION DES ÉCRITURES — GET /list
+================================================================================
+
+  URL      :  GET https://i-management.website/sbi_api/api/entries/list
+  Auth     :  Header X-API-Key
+
+Paramètres query (obligatoires):
+    company_id      string     Code société
+    fiscal_year     int        Exercice comptable
+
+Paramètres query (optionnels):
+    period           string     Période ("01"-"12", "AN")
+    journal_code     string     Code journal
+    account_number   string     Filtre par préfixe de compte (ex: "411")
+    auxiliary_number  string    Filtre par préfixe auxiliaire
+    entry_number     string     N° de pièce exact
+    date_from        string     Date début (YYYY-MM-DD)
+    date_to          string     Date fin (YYYY-MM-DD)
+    search           string     Recherche libre (compte, libellé, pièce, ref)
+    page             int        Page (défaut: 1)
+    page_size        int        Taille de page (défaut: 100, max: 1000)
+
+Exemple d'appel :
+    GET /api/entries/list?company_id=SOC001&fiscal_year=2026&journal_code=VE&page=1
+
+Réponse (200 OK) :
+{
+    "items": [
+        {
+            "id": 232,
+            "company_id": "SOC001",
+            "company_name": "Société Principale",
+            "fiscal_year": 2026,
+            "period": "03",
+            "journal_code": "VE",
+            "journal_label": null,
+            "entry_number": "VE-2026-001234",
+            "entry_date": "2026-03-14",
+            "account_number": "411000",
+            "account_label": "Clients",
+            "auxiliary_number": "C00145",
+            "auxiliary_label": "Client Dupont SA",
+            "label": "Facture FA-2026-789",
+            "debit": 1200.0,
+            "credit": 0.0,
+            "reference": "FA-2026-789",
+            "document_number": null,
+            "analytical_section": null,
+            "currency": "EUR",
+            "sync_id": "a1b2c3d4-...",
+            "created_at": "2026-03-14T10:00:00"
+        }
+    ],
+    "total": 150,
+    "page": 1,
+    "page_size": 100,
+    "total_pages": 2
+}
+
+
+================================================================================
+14. MODIFICATION D'UNE ÉCRITURE — PUT /update
+================================================================================
+
+  URL      :  PUT https://i-management.website/sbi_api/api/entries/update
+  Auth     :  Header X-API-Key
+  Content  :  application/json
+
+Body :
+{
+    "id": 232,
+    "fields": {
+        "label": "Facture FA-2026-789 - Corrigée",
+        "debit": 1440.00,
+        "account_label": "Clients divers"
+    }
+}
+
+Règles :
+  • Seuls les champs présents dans "fields" sont modifiés (mise à jour partielle)
+  • Les champs non fournis restent inchangés
+  • L'écriture doit appartenir au tenant de la clé API
+
+Champs modifiables :
+    journal_code, journal_label, entry_number, entry_date, account_number,
+    account_label, auxiliary_number, auxiliary_label, label, debit, credit,
+    reference, document_number, analytical_section, currency, period,
+    fiscal_year, company_id, company_name
+
+Réponse (200 OK) : l'écriture modifiée complète (même format que dans /list)
+
+Erreurs :
+    404  →  Écriture non trouvée ou n'appartient pas au tenant
+
+
+================================================================================
+15. MODIFICATION EN LOT — PUT /update-batch
+================================================================================
+
+  URL      :  PUT https://i-management.website/sbi_api/api/entries/update-batch
+  Auth     :  Header X-API-Key
+  Content  :  application/json
+
+Body :
+{
+    "agent_id": "agent-001",
+    "updates": [
+        {
+            "id": 232,
+            "fields": { "label": "Corrigé lot 1", "debit": 1500 }
+        },
+        {
+            "id": 233,
+            "fields": { "credit": 1250 }
+        },
+        {
+            "id": 999999,
+            "fields": { "label": "n'existe pas" }
+        }
+    ]
+}
+
+Réponse (200 OK) :
+{
+    "success": false,
+    "updated": 2,
+    "errors": 1,
+    "details": [
+        { "id": 232, "status": "updated" },
+        { "id": 233, "status": "updated" },
+        { "id": 999999, "status": "not_found" }
+    ]
+}
+
+Règles :
+  • "success" = true uniquement si errors == 0
+  • Les mises à jour valides sont appliquées même si certaines échouent
+  • Chaque élément de "updates" contient l'ID et les champs à modifier
+
+
+================================================================================
+16. SUPPRESSION D'UNE ÉCRITURE — DELETE /delete
+================================================================================
+
+  URL      :  DELETE https://i-management.website/sbi_api/api/entries/delete?id=232
+  Auth     :  Header X-API-Key
+
+Paramètre query :
+    id      int     ID de l'écriture à supprimer (obligatoire)
+
+Réponse (200 OK) :
+{
+    "success": true,
+    "deleted": 1,
+    "message": "Écriture #232 supprimée"
+}
+
+Erreurs :
+    404  →  Écriture non trouvée ou n'appartient pas au tenant
+
+
+================================================================================
+17. SUPPRESSION EN LOT — POST /delete-batch
+================================================================================
+
+  URL      :  POST https://i-management.website/sbi_api/api/entries/delete-batch
+  Auth     :  Header X-API-Key
+  Content  :  application/json
+
+3 modes de ciblage (par priorité) :
+
+  Mode 1 — Par liste d'IDs :
+  {
+      "ids": [232, 233, 234]
+  }
+
+  Mode 2 — Par sync_id (supprimer toute une synchronisation) :
+  {
+      "sync_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+  }
+
+  Mode 3 — Par périmètre comptable (+ filtres optionnels) :
+  {
+      "company_id": "SOC001",
+      "fiscal_year": 2026,
+      "period": "03",
+      "journal_code": "VE",
+      "account_number": "411"
+  }
+  Les champs period, journal_code, account_number sont optionnels.
+  account_number filtre par préfixe (LIKE '411%').
+
+Réponse (200 OK) :
+{
+    "success": true,
+    "deleted": 15,
+    "message": "15 écriture(s) supprimée(s)"
+}
+
+Erreurs :
+    400  →  Aucun critère fourni (fournissez ids, sync_id, ou company_id+fiscal_year)
+
+
+================================================================================
+18. SUPPRESSION PAR SYNC — DELETE /delete-by-sync
+================================================================================
+
+  URL      :  DELETE https://i-management.website/sbi_api/api/entries/delete-by-sync
+               ?sync_id=a1b2c3d4-e5f6-7890-abcd-ef1234567890
+  Auth     :  Header X-API-Key
+
+Paramètre query :
+    sync_id     string     ID de synchronisation (obligatoire)
+
+Réponse (200 OK) :
+{
+    "success": true,
+    "deleted": 3,
+    "message": "3 écriture(s) supprimée(s) pour sync a1b2c3d4-..."
+}
+
+Erreurs :
+    404  →  Aucune écriture trouvée pour ce sync_id
+
+
+================================================================================
+19. REMPLACEMENT INTÉGRAL — PUT /replace
+================================================================================
+
+  URL      :  PUT https://i-management.website/sbi_api/api/entries/replace
+  Auth     :  Header X-API-Key
+  Content  :  application/json
+
+Principe :
+  1. Supprime TOUTES les écritures existantes pour le périmètre
+     (company_id + fiscal_year + period optionnel)
+  2. Insère les nouvelles écritures fournies dans "data"
+  3. Crée un historique de synchronisation (status: "replaced")
+
+  ⚠  Opération irréversible. Idéale pour re-synchroniser un périmètre complet.
+
+Body :
+{
+    "agent_id": "agent-001",
+    "company_id": "SOC001",
+    "company_name": "Société Principale",
+    "fiscal_year": 2026,
+    "period": "03",
+    "data": [
+        {
+            "journal_code": "VE",
+            "entry_date": "2026-03-14",
+            "account_number": "411000",
+            "account_label": "Clients",
+            "label": "Facture FA-2026-800",
+            "debit": 2400.00,
+            "credit": 0.00
+        },
+        {
+            "journal_code": "VE",
+            "entry_date": "2026-03-14",
+            "account_number": "707100",
+            "account_label": "Ventes",
+            "label": "Facture FA-2026-800",
+            "debit": 0.00,
+            "credit": 2000.00
+        },
+        {
+            "journal_code": "VE",
+            "entry_date": "2026-03-14",
+            "account_number": "445710",
+            "account_label": "TVA collectée",
+            "label": "TVA FA-2026-800",
+            "debit": 0.00,
+            "credit": 400.00
+        }
+    ],
+    "metadata": {
+        "source": "Sage Comptabilité",
+        "reason": "Re-synchronisation complète mars 2026"
+    }
+}
+
+Réponse (200 OK) :
+{
+    "success": true,
+    "deleted": 150,
+    "inserted": 175,
+    "sync_id": "b2c3d4e5-f6a7-8901-bcde-f23456789012",
+    "message": "Remplacement pour SOC001 exercice 2026 période 03 : 150 supprimée(s), 175 insérée(s)"
+}
+
+Si period n'est pas fourni, remplace toutes les écritures de l'exercice.
+
+
+================================================================================
+20. EXEMPLE DE CODE PYTHON — AGENT DESKTOP (CRUD COMPLET)
+================================================================================
+
+import requests
+
+API_URL = "https://i-management.website/sbi_api/api/entries"
+API_KEY = "sbi_IGkgj4VdlMzpAwVFjQebjwDV2rTBvIdBYBHc4znyT3I"
+HEADERS = {
+    "Content-Type": "application/json",
+    "X-API-Key": API_KEY
+}
+
+
+def lister_ecritures(company_id, fiscal_year, **filtres):
+    """Consulter les écritures avec filtres et pagination."""
+    params = {"company_id": company_id, "fiscal_year": fiscal_year, **filtres}
+    resp = requests.get(f"{API_URL}/list", headers=HEADERS, params=params)
+    resp.raise_for_status()
+    data = resp.json()
+    print(f"{data['total']} écritures (page {data['page']}/{data['total_pages']})")
+    return data
+
+
+def modifier_ecriture(entry_id, **champs):
+    """Modifier une écriture (mise à jour partielle)."""
+    payload = {"id": entry_id, "fields": champs}
+    resp = requests.put(f"{API_URL}/update", json=payload, headers=HEADERS)
+    resp.raise_for_status()
+    print(f"Écriture #{entry_id} modifiée")
+    return resp.json()
+
+
+def modifier_lot(agent_id, updates):
+    """
+    Modifier plusieurs écritures.
+    updates = [(id, {champs}), (id, {champs}), ...]
+    """
+    payload = {
+        "agent_id": agent_id,
+        "updates": [{"id": uid, "fields": fields} for uid, fields in updates]
+    }
+    resp = requests.put(f"{API_URL}/update-batch", json=payload, headers=HEADERS)
+    resp.raise_for_status()
+    result = resp.json()
+    print(f"{result['updated']} modifiée(s), {result['errors']} erreur(s)")
+    return result
+
+
+def supprimer_ecriture(entry_id):
+    """Supprimer une écriture par ID."""
+    resp = requests.delete(f"{API_URL}/delete", headers=HEADERS,
+                           params={"id": entry_id})
+    resp.raise_for_status()
+    print(f"Écriture #{entry_id} supprimée")
+    return resp.json()
+
+
+def supprimer_lot(ids=None, sync_id=None, company_id=None, fiscal_year=None,
+                  period=None, journal_code=None, account_number=None):
+    """Supprimer des écritures en lot."""
+    payload = {}
+    if ids:
+        payload["ids"] = ids
+    elif sync_id:
+        payload["sync_id"] = sync_id
+    elif company_id and fiscal_year:
+        payload["company_id"] = company_id
+        payload["fiscal_year"] = fiscal_year
+        if period:
+            payload["period"] = period
+        if journal_code:
+            payload["journal_code"] = journal_code
+        if account_number:
+            payload["account_number"] = account_number
+    resp = requests.post(f"{API_URL}/delete-batch", json=payload, headers=HEADERS)
+    resp.raise_for_status()
+    result = resp.json()
+    print(f"{result['deleted']} écriture(s) supprimée(s)")
+    return result
+
+
+def supprimer_sync(sync_id):
+    """Supprimer toutes les écritures d'une synchronisation."""
+    resp = requests.delete(f"{API_URL}/delete-by-sync", headers=HEADERS,
+                           params={"sync_id": sync_id})
+    resp.raise_for_status()
+    return resp.json()
+
+
+def remplacer_ecritures(agent_id, company_id, company_name, fiscal_year,
+                        ecritures, period=None):
+    """Remplacer intégralement les écritures d'un périmètre."""
+    payload = {
+        "agent_id": agent_id,
+        "company_id": company_id,
+        "company_name": company_name,
+        "fiscal_year": fiscal_year,
+        "data": ecritures
+    }
+    if period:
+        payload["period"] = period
+    resp = requests.put(f"{API_URL}/replace", json=payload, headers=HEADERS)
+    resp.raise_for_status()
+    result = resp.json()
+    print(f"Remplacement : {result['deleted']} supprimée(s), "
+          f"{result['inserted']} insérée(s) (sync: {result['sync_id']})")
+    return result
+
+
+# ─── Exemples d'utilisation ──────────────────────────────────────────
+
+# Lister les écritures de mars 2026 pour le journal VE
+resultat = lister_ecritures("SOC001", 2026, period="03", journal_code="VE")
+
+# Modifier une écriture
+modifier_ecriture(232, label="Facture corrigée", debit=1440.00)
+
+# Modifier plusieurs écritures
+modifier_lot("agent-001", [
+    (233, {"credit": 1200}),
+    (234, {"credit": 240}),
+])
+
+# Supprimer une écriture
+supprimer_ecriture(235)
+
+# Supprimer tout un journal pour une période
+supprimer_lot(company_id="SOC001", fiscal_year=2026, period="03",
+              journal_code="VE")
+
+# Remplacer toutes les écritures de mars 2026
+remplacer_ecritures(
+    agent_id="agent-001",
+    company_id="SOC001",
+    company_name="Société Principale",
+    fiscal_year=2026,
+    period="03",
+    ecritures=[...]
+)
+
+
+================================================================================
+21. RÉSUMÉ DES ROUTES UTILISÉES PAR L'AGENT
+================================================================================
+
+Ordre    Méthode   Route                           But
+─────    ───────   ─────────────────────────────    ──────────────────────────────────
+  1      GET       /health                         Vérifier que SBI est en ligne
+  2      POST      /api/agent/register             Enregistrer l'agent (1 fois)
+  3      POST      /api/agent/heartbeat            Signal de vie (toutes les 60s)
+  4      POST      /api/entries/push               Envoyer les écritures brutes ⭐
+  5      GET       /api/entries/list                Consulter les écritures ⭐
+  6      PUT       /api/entries/update              Modifier une écriture
+  7      PUT       /api/entries/update-batch        Modifier en lot
+  8      DELETE    /api/entries/delete              Supprimer une écriture
+  9      POST      /api/entries/delete-batch        Supprimer en lot
+ 10      DELETE    /api/entries/delete-by-sync      Supprimer par synchronisation
+ 11      PUT       /api/entries/replace             Remplacer un périmètre complet
+ 12      GET       /api/entries/balance             Vérifier la balance calculée
+ 13      GET       /api/entries/syncs               Consulter l'historique des syncs
+
+Base URL : https://i-management.website/sbi_api
+Auth     : Header X-API-Key sur toutes les routes /api/*
+
+
+================================================================================

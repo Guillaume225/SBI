@@ -1,0 +1,772 @@
+================================================================================
+         AGENT DESKTOP SBI — CAHIER DE CHARGES
+================================================================================
+         Programme externe de collecte et remontée de données
+         vers la plateforme SBI (Solution de Business Intelligente)
+================================================================================
+
+
+1. CONTEXTE ET OBJECTIF
+=======================
+
+La plateforme SBI affiche actuellement le message suivant aux utilisateurs :
+
+   « Aucune donnée disponible. Pour commencer à utiliser SBI, vous devez
+     soit connecter un Agent Desktop qui synchronisera automatiquement vos
+     données comptables, soit importer manuellement vos fichiers de balance /
+     grand livre via la section Reportings. »
+
+L'Agent Desktop est le programme externe qui résout ce problème. Il s'installe
+sur le poste ou serveur du client, se connecte en LECTURE SEULE aux bases de
+données comptables et métier, extrait les données pertinentes, et les pousse
+vers la plateforme SBI via ses APIs REST sécurisées.
+
+Objectifs :
+   - Alimenter automatiquement SBI en données comptables et financières
+   - Supporter plusieurs sources de données (Sage, ERP, bases SQL, etc.)
+   - Fonctionner en mode service Windows (tâche planifiée automatique)
+   - Garantir la sécurité (lecture seule, HTTPS, authentification par clé API)
+
+
+2. TECHNOLOGIE
+==============
+
+Langage          : Python 3.10+
+Interface        : Console / Service Windows (optionnel : GUI PyQt ou Tkinter)
+Connecteurs DB   : pyodbc (SQL Server), psycopg2 (PostgreSQL),
+                   mysql-connector-python (MySQL), cx_Oracle (Oracle)
+Client HTTP      : requests ou httpx
+Planification    : APScheduler ou schedule
+Service Windows  : pywin32 (win32serviceutil) ou NSSM
+Configuration    : JSON (config.json)
+Logs             : logging (fichier + console)
+Packaging        : PyInstaller (exécutable .exe autonome)
+
+
+3. ARCHITECTURE DU PROGRAMME
+=============================
+
+Agent-Desktop-SBI/
+├── src/
+│   ├── __init__.py
+│   ├── main.py                 # Point d'entrée principal
+│   ├── config/
+│   │   ├── __init__.py
+│   │   ├── settings.py         # Chargement de config.json
+│   │   └── constants.py        # Constantes (data_types, etc.)
+│   ├── connectors/
+│   │   ├── __init__.py
+│   │   ├── base_connector.py   # Classe abstraite BaseConnector
+│   │   ├── sqlserver.py        # Connecteur SQL Server (Sage, etc.)
+│   │   ├── postgresql.py       # Connecteur PostgreSQL
+│   │   ├── mysql.py            # Connecteur MySQL
+│   │   └── oracle.py           # Connecteur Oracle
+│   ├── extractors/
+│   │   ├── __init__.py
+│   │   ├── base_extractor.py   # Classe abstraite BaseExtractor
+│   │   ├── trial_balance.py    # Extracteur : Balance générale
+│   │   ├── general_ledger.py   # Extracteur : Grand livre
+│   │   ├── subsidiary.py       # Extracteur : Balance auxiliaire
+│   │   ├── chart_of_accounts.py# Extracteur : Plan comptable
+│   │   ├── analytical.py       # Extracteur : Données analytiques
+│   │   └── accounting_entries.py # Extracteur : Écritures comptables
+│   ├── api_client/
+│   │   ├── __init__.py
+│   │   └── sbi_client.py       # Client HTTP vers les APIs SBI
+│   ├── scheduler/
+│   │   ├── __init__.py
+│   │   └── sync_scheduler.py   # Planificateur de synchronisations
+│   └── service/
+│       ├── __init__.py
+│       └── windows_service.py  # Service Windows (optionnel)
+├── logs/                        # Fichiers de logs
+├── config.json                  # Configuration utilisateur
+├── requirements.txt             # Dépendances Python
+└── README.md
+
+
+4. FICHIER DE CONFIGURATION (config.json)
+==========================================
+
+{
+  "agent": {
+    "agent_id": "agent-001",
+    "agent_name": "Agent Comptabilité Siège",
+    "version": "1.0.0"
+  },
+
+  "sbi_server": {
+    "base_url": "https://sbi.entreprise.com",
+    "api_key": "clé-api-secrète-fournie-par-sbi",
+    "verify_ssl": true,
+    "timeout_seconds": 30
+  },
+
+  "tenant_id": "default",
+
+  "sources": [
+    {
+      "id": "sage-compta",
+      "name": "Sage Comptabilité",
+      "type": "sqlserver",
+      "connection": {
+        "driver": "ODBC Driver 17 for SQL Server",
+        "server": "192.168.1.10",
+        "database": "SAGE_COMPTA",
+        "username": "lecteur_sage",
+        "password": "mot_de_passe",
+        "trusted_connection": false
+      },
+      "companies": [
+        {
+          "company_id": "SOC001",
+          "company_name": "Société Principale",
+          "code": "SP",
+          "fiscal_year_start": "01-01",
+          "enabled": true
+        }
+      ],
+      "extractions": [
+        "chart_of_accounts",
+        "trial_balance",
+        "general_ledger",
+        "subsidiary_balance",
+        "accounting_entries",
+        "analytical_balance"
+      ]
+    }
+  ],
+
+  "scheduler": {
+    "enabled": true,
+    "interval_minutes": 60,
+    "start_time": "06:00",
+    "end_time": "22:00",
+    "run_on_startup": true
+  },
+
+  "logging": {
+    "level": "INFO",
+    "file": "logs/agent.log",
+    "max_size_mb": 10,
+    "backup_count": 5
+  }
+}
+
+
+5. FONCTIONNALITÉS DÉTAILLÉES
+==============================
+
+5.1. Enregistrement de l'agent
+-------------------------------
+Au premier démarrage, l'agent doit s'enregistrer auprès de SBI :
+   - Envoie ses identifiants (agent_id, nom, hostname, type source)
+   - Reçoit une confirmation d'enregistrement
+   - Stocke localement l'état d'enregistrement
+
+5.2. Signal de vie (Heartbeat)
+-------------------------------
+L'agent envoie périodiquement (toutes les 60 secondes) un heartbeat :
+   - Signale qu'il est en ligne et fonctionnel
+   - Transmet son statut actuel (online, syncing, error)
+   - Permet à SBI d'afficher l'état des agents en temps réel
+
+5.3. Connexion aux bases sources
+---------------------------------
+   - Connexion en LECTURE SEULE uniquement
+   - Support multi-sources (plusieurs bases simultanément)
+   - Test de connexion avant extraction
+   - Gestion des timeouts et reconnexions
+   - Support des principaux SGBD : SQL Server, PostgreSQL, MySQL, Oracle
+
+5.4. Extraction des données
+-----------------------------
+L'agent extrait les types de données suivants :
+
+   a) Plan comptable (chart_of_accounts)
+      → Numéro de compte, Libellé, Type, Classe, Actif/Inactif
+
+   b) Balance générale (trial_balance)
+      → Numéro de compte, Libellé, Débit ouverture, Crédit ouverture,
+        Débit période, Crédit période, Cumul débit, Cumul crédit, Solde
+
+   c) Grand livre (general_ledger)
+      → Date, Journal, Numéro de compte, Libellé écriture, Débit, Crédit,
+        Référence, Numéro de pièce
+
+   d) Balance auxiliaire (subsidiary_balance)
+      → Numéro auxiliaire (client/fournisseur), Nom, Débit, Crédit, Solde
+
+   e) Écritures comptables (accounting_entries)
+      → Date, Journal, Compte, Auxiliaire, Libellé, Débit, Crédit,
+        Référence, Pièce, Section analytique
+
+   f) Balance analytique (analytical_balance)
+      → Section analytique, Compte, Libellé, Débit, Crédit, Solde
+
+5.5. Envoi des données vers SBI
+---------------------------------
+   - Découpage en lots (batch) de 1000 enregistrements max par requête
+   - Compression gzip optionnelle pour gros volumes
+   - Retry automatique en cas d'erreur réseau (3 tentatives, backoff exponentiel)
+   - Vérification du succès via la réponse SBI (records_processed)
+   - Journalisation de chaque synchronisation
+
+5.6. Synchronisation incrémentale (delta)
+------------------------------------------
+   - Première exécution : synchronisation complète
+   - Exécutions suivantes : uniquement les données modifiées depuis le dernier sync
+   - Stockage local de la date du dernier sync réussi par type de données
+   - Possibilité de forcer une synchronisation complète
+
+5.7. Planification automatique
+-------------------------------
+   - Exécution périodique configurable (toutes les X minutes)
+   - Plage horaire configurable (ex: 06h-22h)
+   - Exécution au démarrage (optionnel)
+   - Mode service Windows pour démarrage automatique avec le système
+
+5.8. Gestion des erreurs et logs
+----------------------------------
+   - Journalisation complète (INFO, WARNING, ERROR)
+   - Rotation des fichiers de logs
+   - En cas d'erreur : retry automatique puis passage au type suivant
+   - Rapport de synchronisation envoyé à SBI à chaque fin de cycle
+
+
+================================================================================
+6. APIs SBI UTILISÉES PAR L'AGENT DESKTOP
+================================================================================
+
+L'agent communique exclusivement avec les APIs REST de SBI.
+Toutes les requêtes utilisent le header :
+
+   Authorization: Bearer <api_key>
+   Content-Type: application/json
+
+Base URL : http(s)://<serveur_sbi>:8000
+
+
+----------------------------------------------------------------------
+6.1. POST /api/agent/register — Enregistrement de l'agent
+----------------------------------------------------------------------
+
+Description : Enregistre l'agent auprès de SBI lors du premier démarrage
+              ou après une réinstallation.
+
+Requête (JSON) :
+{
+    "agent_id":     "agent-001",              // Identifiant unique de l'agent
+    "agent_name":   "Agent Compta Siège",     // Nom descriptif
+    "hostname":     "SRV-COMPTA-01",          // Nom de la machine hôte
+    "source_type":  "sage",                   // Type de source (sage, erp, database...)
+    "source_name":  "Sage Comptabilité i7",   // Nom de la source de données
+    "tenant_id":    "default",                // Identifiant du tenant/organisation
+    "version":      "1.0.0"                   // Version de l'agent (optionnel)
+}
+
+Réponse (200 OK) :
+{
+    "agent_id":       "agent-001",
+    "agent_name":     "Agent Compta Siège",
+    "hostname":       "SRV-COMPTA-01",
+    "source_type":    "sage",
+    "source_name":    "Sage Comptabilité i7",
+    "tenant_id":      "default",
+    "status":         "online",
+    "last_heartbeat": "2026-03-14T08:00:00Z",
+    "last_sync":      null,
+    "registered_at":  "2026-03-14T08:00:00Z",
+    "version":        "1.0.0"
+}
+
+Usage dans l'agent :
+   - Appeler au démarrage si l'agent n'est pas encore enregistré
+   - Peut être rappelé pour mettre à jour les informations
+
+
+----------------------------------------------------------------------
+6.2. POST /api/agent/heartbeat — Signal de vie
+----------------------------------------------------------------------
+
+Description : Envoie un signal de vie périodique pour indiquer que l'agent
+              est actif et fonctionnel. Appelé toutes les 60 secondes.
+
+Requête (JSON) :
+{
+    "agent_id":  "agent-001",                  // Identifiant de l'agent
+    "status":    "online",                     // online | syncing | error | offline
+    "last_sync": "2026-03-14T07:30:00Z",       // Date dernière synchro réussie (optionnel)
+    "message":   "En attente"                  // Message de statut libre (optionnel)
+}
+
+Réponse (200 OK) :
+{
+    "status": "ok"
+}
+
+Valeurs possibles pour "status" :
+   - "online"   : L'agent est prêt, en attente
+   - "syncing"  : L'agent est en cours de synchronisation
+   - "error"    : L'agent a rencontré une erreur
+   - "offline"  : L'agent va s'arrêter
+
+Erreurs possibles :
+   - 404 : Agent non enregistré → relancer POST /api/agent/register
+
+
+----------------------------------------------------------------------
+6.3. POST /api/data/push — Envoi des données comptables
+----------------------------------------------------------------------
+
+Description : API PRINCIPALE. Envoie un lot de données extraites d'une
+              source vers SBI. Appelée pour chaque type de données et
+              chaque société.
+
+Requête (JSON) :
+{
+    "agent_id":     "agent-001",
+    "tenant_id":    "default",
+    "company_id":   "SOC001",
+    "company_name": "Société Principale",
+    "data_type":    "trial_balance",
+    "fiscal_year":  2026,
+    "period":       "03",
+    "data": [
+        {
+            "account_number":   "411000",
+            "account_label":    "Clients",
+            "opening_debit":    150000.00,
+            "opening_credit":   0.00,
+            "period_debit":     25000.00,
+            "period_credit":    18000.00,
+            "cumulative_debit": 175000.00,
+            "cumulative_credit":18000.00,
+            "balance":          157000.00
+        },
+        {
+            "account_number":   "401000",
+            "account_label":    "Fournisseurs",
+            "opening_debit":    0.00,
+            "opening_credit":   98000.00,
+            "period_debit":     12000.00,
+            "period_credit":    35000.00,
+            "cumulative_debit": 12000.00,
+            "cumulative_credit":133000.00,
+            "balance":          -121000.00
+        }
+    ],
+    "metadata": {
+        "extraction_date":  "2026-03-14T08:15:00Z",
+        "source":           "Sage Comptabilité i7",
+        "total_records":    2,
+        "is_full_sync":     false
+    }
+}
+
+Réponse (200 OK) :
+{
+    "success":            true,
+    "records_received":   2,
+    "records_processed":  2,
+    "message":            "2 enregistrements reçus pour trial_balance",
+    "sync_id":            "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+}
+
+Types de données (data_type) supportés :
+   ┌────────────────────────┬──────────────────────────────────────────┐
+   │ data_type              │ Description                              │
+   ├────────────────────────┼──────────────────────────────────────────┤
+   │ chart_of_accounts      │ Plan comptable                           │
+   │ trial_balance          │ Balance générale                         │
+   │ general_ledger         │ Grand livre général                      │
+   │ subsidiary_balance     │ Balance auxiliaire (clients/fournisseurs) │
+   │ accounting_entries     │ Écritures comptables                     │
+   │ analytical_balance     │ Balance analytique                       │
+   │ general_ledger_aux     │ Grand livre auxiliaire                   │
+   │ analytical_ledger      │ Grand livre analytique                   │
+   └────────────────────────┴──────────────────────────────────────────┘
+
+Structure des données par type (champs dans chaque objet de "data") :
+
+   chart_of_accounts :
+      account_number, account_label, account_type, account_class, is_active
+
+   trial_balance :
+      account_number, account_label, opening_debit, opening_credit,
+      period_debit, period_credit, cumulative_debit, cumulative_credit, balance
+
+   general_ledger :
+      entry_date, journal_code, account_number, label, debit, credit,
+      reference, document_number, balance
+
+   subsidiary_balance :
+      auxiliary_number, account_label, debit, credit, balance
+
+   accounting_entries :
+      fiscal_year, period, journal_code, entry_date, account_number,
+      auxiliary_number, label, debit, credit, reference, document_number,
+      analytical_section
+
+   analytical_balance :
+      analytical_section, account_number, account_label, debit, credit, balance
+
+
+----------------------------------------------------------------------
+6.4. GET /api/data/sync — État de synchronisation
+----------------------------------------------------------------------
+
+Description : Récupère l'état de synchronisation de tous les agents.
+              Utilisé pour vérifier que les données ont bien été reçues.
+
+Requête : GET /api/data/sync
+Headers : Authorization: Bearer <token_utilisateur>
+
+Réponse (200 OK) :
+[
+    {
+        "agent_id":    "agent-001",
+        "agent_name":  "Agent Compta Siège",
+        "source_type": "sage",
+        "last_sync":   "2026-03-14T08:15:00Z",
+        "status":      "online",
+        "companies":   [
+            {"id": "SOC001", "name": "Société Principale"}
+        ],
+        "data_types":  ["trial_balance", "general_ledger", "chart_of_accounts"]
+    }
+]
+
+Note : Cette API requiert un token utilisateur JWT (pas la clé API agent).
+       L'agent peut l'utiliser pour vérification, mais c'est principalement
+       consommé par le frontend SBI.
+
+
+----------------------------------------------------------------------
+6.5. GET /api/data/companies — Liste des sociétés
+----------------------------------------------------------------------
+
+Description : Récupère la liste des sociétés enregistrées dans SBI.
+              Permet à l'agent de vérifier les sociétés déjà connues.
+
+Requête : GET /api/data/companies
+Headers : Authorization: Bearer <token_utilisateur>
+
+Réponse (200 OK) :
+[
+    {
+        "id":                "SOC001",
+        "name":              "Société Principale",
+        "code":              "SP",
+        "fiscal_year_start": "01-01",
+        "source_agent":      "agent-001",
+        "tenant_id":         "default"
+    }
+]
+
+
+----------------------------------------------------------------------
+6.6. GET /api/agent/ — Liste des agents enregistrés
+----------------------------------------------------------------------
+
+Description : Récupère la liste de tous les agents enregistrés.
+              Utilisé pour vérifier l'état d'enregistrement.
+
+Requête : GET /api/agent/
+
+Réponse (200 OK) :
+[
+    {
+        "agent_id":       "agent-001",
+        "agent_name":     "Agent Compta Siège",
+        "hostname":       "SRV-COMPTA-01",
+        "source_type":    "sage",
+        "source_name":    "Sage Comptabilité i7",
+        "tenant_id":      "default",
+        "status":         "online",
+        "last_heartbeat": "2026-03-14T10:30:00Z",
+        "last_sync":      "2026-03-14T08:15:00Z",
+        "registered_at":  "2026-03-14T08:00:00Z",
+        "version":        "1.0.0"
+    }
+]
+
+
+================================================================================
+7. FLUX DE FONCTIONNEMENT (SÉQUENCE COMPLÈTE)
+================================================================================
+
+   ┌─────────────────────────────────────────────────────────────────┐
+   │                    DÉMARRAGE DE L'AGENT                        │
+   └─────────────────┬───────────────────────────────────────────────┘
+                     │
+                     ▼
+   ┌─────────────────────────────────────────────────────────────────┐
+   │ 1. Charger config.json                                         │
+   │ 2. Initialiser les logs                                        │
+   │ 3. Tester la connexion au serveur SBI (GET /health)            │
+   └─────────────────┬───────────────────────────────────────────────┘
+                     │
+                     ▼
+   ┌─────────────────────────────────────────────────────────────────┐
+   │ 4. POST /api/agent/register                                    │
+   │    → S'enregistrer auprès de SBI                               │
+   └─────────────────┬───────────────────────────────────────────────┘
+                     │
+                     ▼
+   ┌─────────────────────────────────────────────────────────────────┐
+   │ 5. Démarrer le thread HEARTBEAT (toutes les 60s)               │
+   │    → POST /api/agent/heartbeat {"status": "online"}            │
+   └─────────────────┬───────────────────────────────────────────────┘
+                     │
+                     ▼
+   ┌─────────────────────────────────────────────────────────────────┐
+   │ 6. Démarrer le SCHEDULER (toutes les X minutes)                │
+   └─────────────────┬───────────────────────────────────────────────┘
+                     │
+          ┌──────────▼──────────┐
+          │  CYCLE DE SYNCHRO   │ (répété selon le scheduler)
+          └──────────┬──────────┘
+                     │
+                     ▼
+   ┌─────────────────────────────────────────────────────────────────┐
+   │ 7. Heartbeat → {"status": "syncing"}                           │
+   └─────────────────┬───────────────────────────────────────────────┘
+                     │
+                     ▼
+   ┌─────────────────────────────────────────────────────────────────┐
+   │ 8. Pour chaque SOURCE dans config.sources :                    │
+   │    a. Tester la connexion à la base de données                 │
+   │    b. Pour chaque SOCIÉTÉ (company) :                          │
+   │       Pour chaque TYPE DE DONNÉES (extraction) :               │
+   │          i.   Exécuter la requête SQL d'extraction              │
+   │          ii.  Formater les résultats en JSON                    │
+   │          iii. Découper en lots de 1000 enregistrements          │
+   │          iv.  POST /api/data/push (pour chaque lot)            │
+   │          v.   Vérifier la réponse (success: true)              │
+   │          vi.  Logger le résultat                                │
+   └─────────────────┬───────────────────────────────────────────────┘
+                     │
+                     ▼
+   ┌─────────────────────────────────────────────────────────────────┐
+   │ 9. Heartbeat → {"status": "online", "last_sync": "..."}       │
+   │ 10. Sauvegarder la date du dernier sync réussi                 │
+   │ 11. Attendre le prochain cycle du scheduler                    │
+   └─────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+8. REQUÊTES SQL D'EXTRACTION (EXEMPLES SAGE)
+================================================================================
+
+Ces requêtes sont données à titre d'exemple pour une base Sage Comptabilité
+sous SQL Server. Elles doivent être adaptées selon le logiciel source.
+
+8.1. Plan comptable (chart_of_accounts)
+----------------------------------------
+
+   SELECT
+       CG_NUM       AS account_number,
+       CG_INTITULE  AS account_label,
+       CG_TYPE      AS account_type,
+       LEFT(CG_NUM, 1) AS account_class,
+       1             AS is_active
+   FROM F_COMPTEGENERAL
+   ORDER BY CG_NUM;
+
+
+8.2. Balance générale (trial_balance)
+--------------------------------------
+
+   SELECT
+       EC.CG_NUM          AS account_number,
+       CG.CG_INTITULE     AS account_label,
+       SUM(CASE WHEN EC.JM_MOIS = 0 AND EC.EC_SENS = 0 THEN EC.EC_MONTANT ELSE 0 END) AS opening_debit,
+       SUM(CASE WHEN EC.JM_MOIS = 0 AND EC.EC_SENS = 1 THEN EC.EC_MONTANT ELSE 0 END) AS opening_credit,
+       SUM(CASE WHEN EC.JM_MOIS = @mois AND EC.EC_SENS = 0 THEN EC.EC_MONTANT ELSE 0 END) AS period_debit,
+       SUM(CASE WHEN EC.JM_MOIS = @mois AND EC.EC_SENS = 1 THEN EC.EC_MONTANT ELSE 0 END) AS period_credit,
+       SUM(CASE WHEN EC.EC_SENS = 0 THEN EC.EC_MONTANT ELSE 0 END) AS cumulative_debit,
+       SUM(CASE WHEN EC.EC_SENS = 1 THEN EC.EC_MONTANT ELSE 0 END) AS cumulative_credit,
+       SUM(CASE WHEN EC.EC_SENS = 0 THEN EC.EC_MONTANT ELSE -EC.EC_MONTANT END) AS balance
+   FROM F_ECRITUREC EC
+   INNER JOIN F_COMPTEGENERAL CG ON EC.CG_NUM = CG.CG_NUM
+   WHERE EC.N_EXERCICE = @exercice
+   GROUP BY EC.CG_NUM, CG.CG_INTITULE
+   ORDER BY EC.CG_NUM;
+
+
+8.3. Grand livre (general_ledger)
+----------------------------------
+
+   SELECT
+       EC.JM_DATE         AS entry_date,
+       EC.JO_NUM          AS journal_code,
+       EC.CG_NUM          AS account_number,
+       EC.EC_INTITULE      AS label,
+       CASE WHEN EC.EC_SENS = 0 THEN EC.EC_MONTANT ELSE 0 END AS debit,
+       CASE WHEN EC.EC_SENS = 1 THEN EC.EC_MONTANT ELSE 0 END AS credit,
+       EC.EC_REFPIECE      AS reference,
+       EC.EC_PIECE         AS document_number
+   FROM F_ECRITUREC EC
+   WHERE EC.N_EXERCICE = @exercice
+   ORDER BY EC.CG_NUM, EC.JM_DATE;
+
+
+8.4. Balance auxiliaire (subsidiary_balance)
+---------------------------------------------
+
+   SELECT
+       CT.CT_NUM          AS auxiliary_number,
+       CT.CT_INTITULE     AS account_label,
+       SUM(CASE WHEN EC.EC_SENS = 0 THEN EC.EC_MONTANT ELSE 0 END) AS debit,
+       SUM(CASE WHEN EC.EC_SENS = 1 THEN EC.EC_MONTANT ELSE 0 END) AS credit,
+       SUM(CASE WHEN EC.EC_SENS = 0 THEN EC.EC_MONTANT ELSE -EC.EC_MONTANT END) AS balance
+   FROM F_ECRITUREC EC
+   INNER JOIN F_COMPTET CT ON EC.CT_NUM = CT.CT_NUM
+   WHERE EC.N_EXERCICE = @exercice
+   GROUP BY CT.CT_NUM, CT.CT_INTITULE
+   ORDER BY CT.CT_NUM;
+
+
+8.5. Écritures comptables (accounting_entries)
+-----------------------------------------------
+
+   SELECT
+       EC.N_EXERCICE      AS fiscal_year,
+       EC.JM_MOIS         AS period,
+       EC.JO_NUM          AS journal_code,
+       EC.JM_DATE         AS entry_date,
+       EC.CG_NUM          AS account_number,
+       EC.CT_NUM          AS auxiliary_number,
+       EC.EC_INTITULE      AS label,
+       CASE WHEN EC.EC_SENS = 0 THEN EC.EC_MONTANT ELSE 0 END AS debit,
+       CASE WHEN EC.EC_SENS = 1 THEN EC.EC_MONTANT ELSE 0 END AS credit,
+       EC.EC_REFPIECE      AS reference,
+       EC.EC_PIECE         AS document_number,
+       EA.N_ANALYTIQUE     AS analytical_section
+   FROM F_ECRITUREC EC
+   LEFT JOIN F_ECRITUREA EA ON EC.EC_NO = EA.EC_NO
+   WHERE EC.N_EXERCICE = @exercice
+   ORDER BY EC.JM_DATE, EC.EC_NO;
+
+
+================================================================================
+9. SÉCURITÉ
+================================================================================
+
+   ✓ Connexion aux bases sources en LECTURE SEULE uniquement
+     → L'utilisateur de la base doit avoir le rôle db_datareader
+     → Aucune requête INSERT, UPDATE, DELETE autorisée
+
+   ✓ Communication HTTPS chiffrée avec SBI
+     → Vérification du certificat SSL (configurable)
+
+   ✓ Authentification par clé API
+     → Header Authorization: Bearer <api_key>
+     → Clé générée et fournie par SBI lors de la configuration
+
+   ✓ Mots de passe chiffrés dans config.json
+     → Les mots de passe des bases sources sont chiffrés (Fernet / AES)
+     → La clé de chiffrement est stockée séparément
+
+   ✓ Logs sans données sensibles
+     → Pas de mots de passe dans les logs
+     → Masquage des données comptables détaillées
+
+   ✓ Isolation des accès
+     → Un agent par source / par tenant
+     → Pas d'accès croisé entre tenants
+
+
+================================================================================
+10. GESTION DES ERREURS
+================================================================================
+
+   Erreur réseau (connexion à SBI impossible) :
+      → Retry 3 fois avec backoff exponentiel (5s, 15s, 45s)
+      → Si échec total : logger l'erreur, passer à la source suivante
+      → Au prochain cycle du scheduler : retenter
+
+   Erreur base de données (connexion source impossible) :
+      → Logger l'erreur avec détails
+      → Heartbeat → {"status": "error", "message": "..."}
+      → Passer à la source suivante
+
+   Erreur API SBI (réponse non-200) :
+      → 401 : Clé API invalide → stopper, alerter
+      → 404 : Agent non enregistré → relancer l'enregistrement
+      → 500 : Erreur serveur → retry puis passer au lot suivant
+
+   Données volumineuses (> 100 000 enregistrements) :
+      → Découpage automatique en lots de 1000
+      → Envoi séquentiel avec pause de 100ms entre lots
+      → Si un lot échoue : retry 3 fois puis skip et logger
+
+
+================================================================================
+11. DÉPENDANCES PYTHON (requirements.txt)
+================================================================================
+
+   requests>=2.31.0          # Client HTTP
+   pyodbc>=5.1.0             # Connecteur SQL Server
+   psycopg2-binary>=2.9.0    # Connecteur PostgreSQL
+   mysql-connector-python>=8.0.0  # Connecteur MySQL
+   cx_Oracle>=8.3.0          # Connecteur Oracle (optionnel)
+   apscheduler>=3.10.0       # Planificateur de tâches
+   cryptography>=41.0.0      # Chiffrement des mots de passe config
+   pyinstaller>=6.0.0        # Packaging en .exe (dev only)
+   pywin32>=306              # Service Windows (optionnel)
+
+
+================================================================================
+12. COMMANDES DE LANCEMENT
+================================================================================
+
+   Mode console (développement) :
+      cd Agent-Desktop-SBI
+      python src/main.py
+
+   Mode console avec sync immédiate :
+      python src/main.py --sync-now
+
+   Mode test de connexion :
+      python src/main.py --test-connection
+
+   Installation en service Windows :
+      python src/main.py --install-service
+
+   Désinstallation du service :
+      python src/main.py --remove-service
+
+
+================================================================================
+13. LIVRABLES ATTENDUS
+================================================================================
+
+   Phase 1 (MVP) :
+      ✓ Connexion SQL Server (Sage) en lecture seule
+      ✓ Extraction : plan comptable + balance générale
+      ✓ Envoi vers SBI via POST /api/data/push
+      ✓ Heartbeat périodique
+      ✓ Logs fichier + console
+      ✓ Configuration via config.json
+
+   Phase 2 (Complet) :
+      ✓ Tous les types d'extraction (6 types)
+      ✓ Multi-sources et multi-sociétés
+      ✓ Synchronisation incrémentale (delta)
+      ✓ Planification automatique (scheduler)
+      ✓ Retry et gestion d'erreurs robuste
+
+   Phase 3 (Production) :
+      ✓ Service Windows (démarrage automatique)
+      ✓ Packaging PyInstaller (.exe)
+      ✓ Support PostgreSQL + MySQL
+      ✓ Chiffrement des credentials
+      ✓ Documentation utilisateur
+
+
+================================================================================
+                    Cahier de charges — Agent Desktop SBI
+                            Version 1.0 — Mars 2026
+================================================================================

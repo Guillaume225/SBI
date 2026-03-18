@@ -1,0 +1,359 @@
+================================================================================
+                    SBI - DESCRIPTION DU PROJET
+================================================================================
+
+1. VUE D'ENSEMBLE
+-----------------
+Nom du projet : SBI (Solution de Business Intelligente)
+Version : 0.0.0
+Type : Application web full-stack
+Architecture : Multi-tenant (plusieurs clients/organisations sur une même instance)
+
+Cette plateforme est une solution de Business Intelligence et d'analyse 
+financière multi-sources. Elle permet aux utilisateurs de visualiser des 
+reportings financiers, d'analyser les données comptables et métier, et 
+d'interagir avec un assistant IA.
+
+🏢 MULTI-TENANT :
+   - Chaque client (tenant) dispose de son propre espace isolé
+   - Données séparées et sécurisées entre les tenants
+   - Configuration et personnalisation par tenant
+   - Gestion centralisée des utilisateurs par organisation
+   - Facturation et quotas par tenant (optionnel)
+
+⚠️ ARCHITECTURE DÉCOUPLÉE :
+   Cette application NE SE CONNECTE PAS directement aux bases de données sources.
+   Les données sont collectées par des AGENTS DESKTOP séparés installés sur 
+   les serveurs distants, qui communiquent avec cette plateforme via des APIs REST.
+
+   Sources de données supportées :
+   - Sage (Comptabilité, Gestion commerciale)
+   - ERP tiers (SAP, Oracle, Dynamics, etc.)
+   - Bases de données métier (SQL Server, PostgreSQL, MySQL, etc.)
+   - Applications spécifiques (CRM, SIRH, etc.)
+
+
+2. ARCHITECTURE TECHNIQUE
+-------------------------
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    SERVEURS DISTANTS (Infrastructure Client)                │
+│                                                                             │
+│  ┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐  │
+│  │   AGENT DESKTOP 1   │  │   AGENT DESKTOP 2   │  │   AGENT DESKTOP N   │  │
+│  │      (Sage)         │  │      (ERP X)        │  │   (Application Y)   │  │
+│  └──────────┬──────────┘  └──────────┬──────────┘  └──────────┬──────────┘  │
+│             │                        │                        │             │
+│  ┌──────────▼──────────┐  ┌──────────▼──────────┐  ┌──────────▼──────────┐  │
+│  │   Base Sage         │  │   Base ERP X        │  │   Base App Y        │  │
+│  │   SQL Server        │  │   Oracle/PostgreSQL │  │   MySQL/SQL Server  │  │
+│  └─────────────────────┘  └─────────────────────┘  └─────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────────┘
+                     │                  │                  │
+                     └──────────────────┼──────────────────┘
+                                        │
+                               (API REST / HTTPS)
+                                        │
+                                        ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                             SBI (Ce projet)                                 │
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │                           FRONTEND (React)                            │  │
+│  │         Vite 7.x | React 19.x | React Router 7.x | Bootstrap 5.x     │  │
+│  │                    Port : http://localhost:5173                       │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                     │                                       │
+│                                     ▼                                       │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │                           BACKEND (Python)                            │  │
+│  │               FastAPI | Uvicorn | Pydantic | SQL Server               │  │
+│  │                    Port : http://localhost:8000                       │  │
+│  │                                                                       │  │
+│  │   APIs exposées :                                                     │  │
+│  │   - /api/data/push    → Réception des données depuis les Agents      │  │
+│  │   - /api/reports      → Consultation des reportings                  │  │
+│  │   - /api/sync         → État de synchronisation (multi-agents)       │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                     │                                       │
+│                                     ▼                                       │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │                    BASE DE DONNÉES LOCALE                             │  │
+│  │              SQL Server (données consolidées multi-sources)           │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+3. FONCTIONNALITÉS PRINCIPALES (SBI)
+-------------------------------------
+
+📊 TABLEAU DE BORD (Dashboard)
+   - KPIs personnalisables par métier (Finance, Trésorerie, Ventes, etc.)
+   - Indicateurs de tendance et alertes
+   - Filtrage par période et par société
+   - Données consolidées depuis plusieurs Agents/sources
+
+📈 REPORTINGS FINANCIERS
+   - Balance générale (Trial Balance)
+   - Bilan comptable
+   - Compte de résultat (P&L)
+   - Soldes Intermédiaires de Gestion (SIG)
+   - Grand livre (General Ledger)
+   - Balance auxiliaire (Subsidiary Balance)
+   - Analyses par axe analytique
+
+🤖 ASSISTANT IA (Copilot)
+   - Chat interactif pour interroger les données
+   - Analyse automatisée des données comptables et métier
+   - Suggestions et insights financiers
+
+🔄 SYNCHRONISATION DES DONNÉES
+   - Réception des données poussées par les Agents Desktop
+   - État de synchronisation en temps réel (par agent)
+   - Historique des mises à jour
+   - Gestion multi-sociétés et multi-sources
+
+� IMPORT MANUEL DE DONNÉES (Alternative aux Agents)
+   À défaut de source de données via Agent distant, possibilité d'importer 
+   manuellement les fichiers comptables suivants :
+   - Balance générale
+   - Balance auxiliaire
+   - Grand livre général
+   - Grand livre auxiliaire
+   - Balance analytique
+   - Grand livre analytique
+   
+   Formats supportés : Excel (.xlsx, .xls), CSV
+   → Permet d'utiliser SBI même sans connexion aux bases sources
+
+�🗄️ EXPLORATEUR DE DONNÉES
+   - Navigation dans les données synchronisées
+   - Visualisation et export
+   - Recherche avancée
+
+⚙️ PARAMÈTRES ET CONFIGURATION
+   - Configuration des agents connectés
+   - Base de données du projet (configurations)
+   - Configuration de l'IA
+   - Journaux RAN (Répartition Analytique)
+   - Planification des rafraîchissements
+   - Gestion des utilisateurs et authentification
+
+
+4. LIGNES MÉTIERS SUPPORTÉES
+----------------------------
+
+1. Finance & Comptabilité (priorité haute)
+   - États financiers, analyses et ratios comptables
+
+2. Trésorerie & Cash Management (priorité haute)
+   - Position de trésorerie, prévisions et échéanciers
+
+3. Commerce & Ventes (priorité haute)
+   - Analyse des ventes, clients et performances commerciales
+
+4. Achats & Approvisionnements (priorité moyenne)
+   - Suivi des achats, fournisseurs et commandes
+
+5. Stocks & Logistique (priorité moyenne)
+   - Gestion des stocks, mouvements et valorisation
+
+6. Ressources Humaines (priorité basse)
+   - Effectifs, paie et indicateurs RH
+
+
+5. STRUCTURE DES DOSSIERS (SBI)
+-------------------------------
+
+Projet IA/
+├── backend/                    # API FastAPI (Python)
+│   ├── app/                    # Code applicatif
+│   │   ├── models/             # Modèles Pydantic
+│   │   ├── routers/            # Routes API (reports, sync, batch, etc.)
+│   │   ├── auth.py             # Authentification JWT
+│   │   ├── config.py           # Configuration
+│   │   ├── database.py         # Base de données locale (SQL Server)
+│   │   └── batch_scheduler.py  # Planificateur de tâches
+│   ├── data/                   # Fichiers de configuration JSON
+│   ├── scripts/                # Scripts SQL
+│   ├── main.py                 # Point d'entrée API
+│   ├── run_server.py           # Lanceur du serveur
+│   └── requirements.txt        # Dépendances Python
+│
+├── src/                        # Frontend React
+│   ├── components/             # Composants réutilisables
+│   │   ├── Analysis/           # Composants d'analyse (SIG, GL, etc.)
+│   │   ├── Company/            # Sélecteur de société
+│   │   ├── Copilot/            # Assistant IA
+│   │   ├── Layout/             # Mise en page
+│   │   └── Reports/            # Composants de reportings
+│   ├── pages/                  # Pages de l'application
+│   │   ├── Dashboard/          # Tableau de bord
+│   │   ├── Reports/            # Reportings
+│   │   ├── Assistant/          # Chat IA
+│   │   ├── Database/           # Explorateur de données
+│   │   ├── Settings/           # Paramètres
+│   │   ├── Users/              # Gestion utilisateurs
+│   │   └── Login/              # Authentification
+│   ├── config/                 # Configuration frontend
+│   ├── contexts/               # Contextes React
+│   ├── services/               # Services API
+│   └── App.jsx                 # Composant racine
+│
+├── public/                     # Assets statiques
+├── package.json                # Dépendances Node.js
+├── vite.config.js              # Configuration Vite
+└── index.html                  # Point d'entrée HTML
+
+
+6. ROUTES DE L'APPLICATION
+--------------------------
+
+Frontend (React Router):
+   /                    → Tableau de bord
+   /login               → Page de connexion
+   /reports             → Liste des reportings
+   /reports/:reportId   → Détail d'un reporting
+   /reports/config      → Configuration des reportings
+   /assistant           → Chat IA
+   /database            → Explorateur de données
+   /settings            → Paramètres généraux
+   /settings/agents     → Gestion des agents connectés
+   /settings/project-db → Base de données projet
+   /settings/ai         → Configuration IA
+   /settings/ran-config → Configuration RAN
+   /settings/batch      → Configuration batch
+   /settings/users      → Gestion des utilisateurs
+
+Backend (FastAPI) - APIs internes:
+   /                    → Accueil API
+   /health              → Vérification santé
+   /docs                → Documentation Swagger
+   /redoc               → Documentation ReDoc
+   /api/project-db      → Base de données projet
+   /api/reports         → Données des reportings
+   /api/batch           → Planification des tâches
+   /api/users           → Gestion des utilisateurs
+
+Backend (FastAPI) - APIs pour l'Agent Desktop:
+   /api/agent/register  → Enregistrement d'un agent
+   /api/agent/heartbeat → Signal de vie de l'agent
+   /api/data/push       → Réception des données (POST)
+   /api/data/sync       → État de synchronisation
+   /api/data/companies  → Liste des sociétés configurées
+
+
+7. TECHNOLOGIES UTILISÉES
+-------------------------
+
+SBI (Ce projet):
+
+   Frontend:
+   - React 19.2.0
+   - Vite 7.2.4
+   - React Router DOM 7.13.0
+   - Bootstrap 5.3.8
+   - React Icons 5.5.0
+   - React Markdown 10.1.0
+
+   Backend:
+   - Python 3.x
+   - FastAPI 0.109.0
+   - Uvicorn 0.27.0
+   - Pydantic 2.5.3
+   - PyODBC (SQL Server)
+   - SQLAlchemy (ORM)
+   - Python-Jose (JWT)
+   - Passlib (Bcrypt)
+
+Agent Desktop (Projet séparé - à développer):
+   - Python ou C# (.NET)
+   - Connecteurs multi-bases : PyODBC, psycopg2, mysql-connector, cx_Oracle
+   - Service Windows
+   - Scheduler intégré
+   - Client HTTP (requests / HttpClient)
+
+
+8. SÉCURITÉ
+-----------
+
+SBI:
+- Authentification JWT (JSON Web Tokens)
+- Hachage des mots de passe avec Bcrypt
+- CORS configuré pour le frontend
+- Page de login obligatoire
+- APIs d'ingestion sécurisées (token Agent)
+
+Agent Desktop:
+- Connexion LECTURE SEULE aux bases sources (aucune modification possible)
+- Authentification par clé API vers la plateforme
+- Communication HTTPS chiffrée
+- Logs d'activité
+- Isolation des accès par source
+
+
+9. DÉMARRAGE DE L'APPLICATION
+-----------------------------
+
+1. Backend (Terminal 1):
+   cd backend
+   python run_server.py
+   → Serveur disponible sur http://localhost:8000
+
+2. Frontend (Terminal 2):
+   npm run dev
+   → Application disponible sur http://localhost:5173
+
+3. Agent Desktop (sur serveur distant):
+   → À installer et configurer séparément (voir projet Agent)
+
+
+10. AGENT DESKTOP (Projet séparé à développer)
+----------------------------------------------
+
+L'Agent Desktop est une application Windows à développer séparément.
+Elle sera installée sur chaque serveur hébergeant une base de données source.
+
+Sources supportées:
+   - Sage (Comptabilité, Gestion commerciale, Paie)
+   - ERP tiers (SAP, Oracle, Microsoft Dynamics, Cegid, etc.)
+   - Bases SQL Server, PostgreSQL, MySQL, Oracle
+   - Applications métier avec accès base de données
+
+Responsabilités:
+   - Se connecter aux bases de données sources en LECTURE SEULE
+   - Extraire les données selon les configurations définies
+   - Pousser les données vers SBI via API REST
+   - Gérer la planification des synchronisations
+   - Envoyer des heartbeats pour le monitoring
+
+Structure suggérée:
+   Agent-BI/
+   ├── src/
+   │   ├── config/          # Configuration (connexions DB, URL API)
+   │   ├── connectors/      # Connecteurs par type de base (SQL Server, PostgreSQL, etc.)
+   │   ├── extractors/      # Extracteurs de données par source/table
+   │   ├── sync/            # Logique de synchronisation
+   │   ├── scheduler/       # Planification des tâches
+   │   └── api_client/      # Client HTTP vers la plateforme
+   ├── logs/                # Fichiers de logs
+   ├── config.json          # Configuration utilisateur
+   └── main.py / Program.cs # Point d'entrée
+
+Fonctionnalités clés:
+   ✓ Configuration multi-sources (plusieurs bases de données)
+   ✓ Support des principaux SGBD (SQL Server, PostgreSQL, MySQL, Oracle)
+   ✓ Sélection des sociétés/entités à synchroniser
+   ✓ Mapping des tables/colonnes à extraire
+   ✓ Planification flexible (toutes les X minutes/heures)
+   ✓ Mode service Windows (démarrage automatique)
+   ✓ Interface de configuration (optionnel)
+   ✓ Gestion des erreurs et retry
+   ✓ Compression des données envoyées
+   ✓ Synchronisation incrémentale (delta)
+
+
+================================================================================
+                         Généré automatiquement
+                              Mars 2026
+================================================================================

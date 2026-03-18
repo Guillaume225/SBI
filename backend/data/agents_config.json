@@ -1,0 +1,7 @@
+{
+  "agents": [],
+  "companies": [],
+  "sync_schedule": {
+    "default_interval_minutes": 60
+  }
+}

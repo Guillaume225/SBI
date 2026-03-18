@@ -1,0 +1,390 @@
+================================================================================
+              APIs EXTERNES SBI — RÉFÉRENCE AGENT DESKTOP
+================================================================================
+
+
+Base URL :  https://i-management.website/sbi_api
+Headers  :  Content-Type: application/json
+             X-API-Key: <CLÉ_API_DU_TENANT>
+Auth     :  Clé API obligatoire sur TOUS les endpoints agents (header X-API-Key)
+
+
+================================================================================
+   AUTHENTIFICATION PAR CLÉ API
+================================================================================
+
+Toutes les requêtes de l'agent desktop vers SBI doivent inclure le header :
+
+   X-API-Key: sbi_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+Cette clé est générée par un administrateur SBI depuis l'interface web
+(ou via POST /api/api-keys/generate). Elle est liée à un tenant spécifique.
+
+Toutes les données envoyées avec cette clé seront automatiquement
+associées au tenant correspondant. Le champ "tenant_id" dans les requêtes
+est IGNORÉ — c'est la clé API qui détermine le tenant.
+
+Erreurs possibles :
+   401 → Header X-API-Key absent
+   403 → Clé API invalide ou révoquée
+
+
+================================================================================
+1. POST /api/agent/register — Enregistrement de l'agent
+================================================================================
+
+URL     : POST https://i-management.website/sbi_api/api/agent/register
+
+Requête :
+{
+    "agent_id":     "agent-001",             (string, obligatoire)
+    "agent_name":   "Agent Compta Siège",    (string, obligatoire)
+    "hostname":     "SRV-COMPTA-01",         (string, obligatoire)
+    "source_type":  "sage",                  (string, obligatoire)
+    "source_name":  "Sage Comptabilité i7",  (string, obligatoire)
+    "tenant_id":    "default",               (string, ignoré — déduit de la clé API)
+    "version":      "1.0.0"                  (string, optionnel)
+}
+
+Headers obligatoires :
+    Content-Type: application/json
+    X-API-Key: sbi_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+Réponse (200) :
+{
+    "agent_id":       "agent-001",
+    "agent_name":     "Agent Compta Siège",
+    "hostname":       "SRV-COMPTA-01",
+    "source_type":    "sage",
+    "source_name":    "Sage Comptabilité i7",
+    "tenant_id":      "default",
+    "status":         "online",
+    "last_heartbeat": "2026-03-14T08:00:00Z",
+    "last_sync":      null,
+    "registered_at":  "2026-03-14T08:00:00Z",
+    "version":        "1.0.0"
+}
+
+
+================================================================================
+2. POST /api/agent/heartbeat — Signal de vie
+================================================================================
+
+URL     : POST https://i-management.website/sbi_api/api/agent/heartbeat
+Headers : X-API-Key: <CLÉ_API_DU_TENANT>
+
+Requête :
+{
+    "agent_id":  "agent-001",               (string, obligatoire)
+    "status":    "online",                  (string, défaut: "online")
+    "last_sync": "2026-03-14T07:30:00Z",    (datetime, optionnel)
+    "message":   "En attente"               (string, optionnel)
+}
+
+Valeurs pour "status" : "online", "syncing", "error", "offline"
+
+Réponse (200) :
+{
+    "status": "ok"
+}
+
+Erreur (404) : Agent non enregistré → appeler d'abord /api/agent/register
+
+
+================================================================================
+3. POST /api/data/push — Envoi des données comptables (API PRINCIPALE)
+================================================================================
+
+URL     : POST https://i-management.website/sbi_api/api/data/push
+Headers : X-API-Key: <CLÉ_API_DU_TENANT>
+
+Requête :
+{
+    "agent_id":     "agent-001",             (string, obligatoire)
+    "tenant_id":    "default",               (string, obligatoire)
+    "company_id":   "SOC001",                (string, obligatoire)
+    "company_name": "Société Principale",    (string, obligatoire)
+    "data_type":    "trial_balance",         (string, obligatoire)
+    "fiscal_year":  2026,                    (int, obligatoire)
+    "period":       "03",                    (string, optionnel)
+    "data": [                                (list[dict], obligatoire)
+        { ... données selon data_type ... }
+    ],
+    "metadata": {                            (dict, optionnel)
+        "extraction_date": "2026-03-14T10:00:00Z",
+        "source": "Sage Comptabilité",
+        "total_records": 150,
+        "is_full_sync": true
+    }
+}
+
+Réponse (200) :
+{
+    "success":            true,
+    "records_received":   150,
+    "records_processed":  150,
+    "message":            "150 enregistrements reçus pour trial_balance",
+    "sync_id":            "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+}
+
+
+Types de données supportés (data_type) :
+─────────────────────────────────────────
+  chart_of_accounts    → Plan comptable
+  trial_balance        → Balance générale
+  general_ledger       → Grand livre
+  subsidiary_balance   → Balance auxiliaire
+  accounting_entries   → Écritures comptables
+  analytical_balance   → Balance analytique
+
+
+Structure des données par type :
+─────────────────────────────────
+
+chart_of_accounts :
+  account_number, account_label, account_type, account_class, is_active
+
+trial_balance :
+  account_number, account_label, opening_debit, opening_credit,
+  period_debit, period_credit, cumulative_debit, cumulative_credit, balance
+
+general_ledger :
+  entry_date, journal_code, account_number, label, debit, credit,
+  reference, document_number, balance
+
+subsidiary_balance :
+  auxiliary_number, account_label, debit, credit, balance
+
+accounting_entries :
+  fiscal_year, period, journal_code, entry_date, account_number,
+  auxiliary_number, label, debit, credit, reference, document_number,
+  analytical_section
+
+analytical_balance :
+  analytical_section, account_number, account_label, debit, credit, balance
+
+
+================================================================================
+4. GET /api/agent/ — Liste des agents enregistrés
+================================================================================
+
+URL     : GET https://i-management.website/sbi_api/api/agent/
+Headers : X-API-Key: <CLÉ_API_DU_TENANT>
+
+Réponse (200) :
+[
+    {
+        "agent_id":       "agent-001",
+        "agent_name":     "Agent Compta Siège",
+        "hostname":       "SRV-COMPTA-01",
+        "source_type":    "sage",
+        "source_name":    "Sage Comptabilité i7",
+        "tenant_id":      "default",
+        "status":         "online",
+        "last_heartbeat": "2026-03-14T10:30:00Z",
+        "last_sync":      "2026-03-14T08:15:00Z",
+        "registered_at":  "2026-03-14T08:00:00Z",
+        "version":        "1.0.0"
+    }
+]
+
+
+================================================================================
+5. GET /health — Vérification que le serveur est en ligne
+================================================================================
+
+URL     : GET https://i-management.website/sbi_api/health
+
+Réponse (200) :
+{
+    "status": "ok"
+}
+
+
+================================================================================
+6. POST /api/entries/push — Envoi des écritures comptables brutes
+        ⭐ ROUTE PRINCIPALE POUR L'AGENT DESKTOP ⭐
+================================================================================
+
+URL     : POST https://i-management.website/sbi_api/api/entries/push
+Headers : X-API-Key: <CLÉ_API_DU_TENANT>
+
+Description :
+  L'agent extrait les écritures comptables brutes (lignes de journal)
+  depuis Sage et les envoie telles quelles. SBI stocke les données brutes
+  et calcule la balance générale côté serveur.
+
+Requête :
+{
+    "agent_id":     "agent-001",               (string, obligatoire)
+    "tenant_id":    "default",                 (string, ignoré — déduit de la clé API)
+    "company_id":   "SOC001",                  (string, obligatoire)
+    "company_name": "Société Principale",      (string, obligatoire)
+    "fiscal_year":  2026,                      (int, obligatoire)
+    "period":       "03",                      (string, optionnel — "01"-"12", "AN")
+    "data": [                                  (list, obligatoire)
+        {
+            "journal_code":       "VE",                  (string, optionnel)
+            "journal_label":      "Ventes",              (string, optionnel)
+            "entry_number":       "VE-2026-001234",      (string, optionnel)
+            "entry_date":         "2026-03-14",          (string YYYY-MM-DD, optionnel)
+            "account_number":     "411000",              (string, OBLIGATOIRE)
+            "account_label":      "Clients",             (string, optionnel)
+            "auxiliary_number":   "C00145",              (string, optionnel — tiers)
+            "auxiliary_label":    "Client Dupont SA",    (string, optionnel)
+            "label":              "Facture FA-2026-789", (string, optionnel)
+            "debit":              1200.00,               (float, défaut 0)
+            "credit":             0.00,                  (float, défaut 0)
+            "reference":          "FA-2026-789",         (string, optionnel)
+            "document_number":    "FA-2026-789",         (string, optionnel)
+            "analytical_section": "ANA01",               (string, optionnel)
+            "currency":           "EUR"                  (string, défaut "EUR")
+        },
+        {
+            "journal_code":     "VE",
+            "entry_number":     "VE-2026-001234",
+            "entry_date":       "2026-03-14",
+            "account_number":   "707100",
+            "account_label":    "Ventes de marchandises",
+            "label":            "Facture FA-2026-789",
+            "debit":            0.00,
+            "credit":           1000.00
+        },
+        {
+            "journal_code":     "VE",
+            "entry_number":     "VE-2026-001234",
+            "entry_date":       "2026-03-14",
+            "account_number":   "445710",
+            "account_label":    "TVA collectée",
+            "label":            "TVA Facture FA-2026-789",
+            "debit":            0.00,
+            "credit":           200.00
+        }
+    ],
+    "metadata": {                              (dict, optionnel)
+        "extraction_date": "2026-03-14T10:00:00Z",
+        "source": "Sage Comptabilité i7",
+        "total_records": 3
+    }
+}
+
+Réponse (200) :
+{
+    "success":          true,
+    "records_received": 3,
+    "records_stored":   3,
+    "sync_id":          "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "message":          "3 écritures stockées pour SOC001 (exercice 2026, période 03)"
+}
+
+
+Champs de chaque écriture :
+───────────────────────────
+  journal_code        Code journal (VE, AC, BQ, OD, AN…)
+  journal_label       Libellé du journal
+  entry_number        Numéro de pièce / écriture
+  entry_date          Date de l'écriture (YYYY-MM-DD)
+  account_number      Numéro de compte (OBLIGATOIRE)
+  account_label       Libellé du compte
+  auxiliary_number    Numéro auxiliaire / tiers
+  auxiliary_label     Libellé du tiers
+  label               Libellé de la ligne d'écriture
+  debit               Montant au débit (float, défaut 0)
+  credit              Montant au crédit (float, défaut 0)
+  reference           Référence pièce
+  document_number     Numéro de document
+  analytical_section  Section analytique
+  currency            Devise (défaut "EUR")
+
+
+================================================================================
+7. GET /api/entries/balance — Obtenir la balance générale calculée
+================================================================================
+
+URL     : GET https://i-management.website/sbi_api/api/entries/balance
+Headers : X-API-Key: <CLÉ_API_DU_TENANT>
+
+Paramètres query :
+    company_id   (string, obligatoire)  — Code société
+    fiscal_year  (int, obligatoire)     — Exercice comptable
+    period       (string, optionnel)    — Période ("01"-"12") ou vide pour cumul annuel
+
+Exemple :
+    GET /api/entries/balance?company_id=SOC001&fiscal_year=2026
+    GET /api/entries/balance?company_id=SOC001&fiscal_year=2026&period=03
+
+Réponse (200) :
+{
+    "tenant_id":    "default",
+    "company_id":   "SOC001",
+    "fiscal_year":  2026,
+    "period":       null,
+    "total_debit":  1200.00,
+    "total_credit": 1200.00,
+    "lines": [
+        {
+            "account_number": "411000",
+            "account_label":  "Clients",
+            "total_debit":    1200.00,
+            "total_credit":   0.00,
+            "balance":        1200.00
+        },
+        {
+            "account_number": "445710",
+            "account_label":  "TVA collectée",
+            "total_debit":    0.00,
+            "total_credit":   200.00,
+            "balance":        -200.00
+        },
+        {
+            "account_number": "707100",
+            "account_label":  "Ventes de marchandises",
+            "total_debit":    0.00,
+            "total_credit":   1000.00,
+            "balance":        -1000.00
+        }
+    ],
+    "lines_count": 3
+}
+
+
+================================================================================
+8. GET /api/entries/syncs — Historique des synchronisations
+================================================================================
+
+URL     : GET https://i-management.website/sbi_api/api/entries/syncs
+Headers : X-API-Key: <CLÉ_API_DU_TENANT>
+
+Paramètres query :
+    company_id   (string, optionnel)
+
+Réponse (200) :
+[
+    {
+        "sync_id":          "a1b2c3d4-e5f6-...",
+        "agent_id":         "agent-001",
+        "company_id":       "SOC001",
+        "company_name":     "Société Principale",
+        "fiscal_year":      2026,
+        "period":           "03",
+        "records_received": 150,
+        "records_processed": 150,
+        "status":           "completed",
+        "started_at":       "2026-03-14T10:00:00Z"
+    }
+]
+
+
+================================================================================
+ORDRE D'APPEL RECOMMANDÉ
+================================================================================
+
+  1.  GET  /health              → Vérifier que SBI est accessible
+  2.  POST /api/agent/register  → Enregistrer l'agent (1 seule fois)
+  3.  POST /api/agent/heartbeat → Envoyer un heartbeat (toutes les 60s)
+  4.  POST /api/entries/push    → Envoyer les écritures brutes ⭐
+  5.  GET  /api/entries/balance  → Vérifier la balance calculée
+  6.  GET  /api/entries/syncs    → Consulter l'historique des syncs
+  7.  GET  /api/agent/           → Vérifier l'état de l'agent
+
+================================================================================
